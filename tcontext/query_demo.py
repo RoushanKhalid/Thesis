@@ -9,7 +9,7 @@ from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 
 
-PROJECT_DIR = Path("tcontext")
+PROJECT_DIR = Path(__file__).resolve().parent
 VECTOR_DB_ROOT = PROJECT_DIR / "vector_db"
 COLLECTION_NAME = "clip_image_embeddings"
 CLIP_NAME = "openai/clip-vit-base-patch32"

@@ -8,6 +8,13 @@ from pathlib import Path
 import re
 from urllib.request import Request, urlopen
 import subprocess
+import os as _os
+
+# Suppress noisy framework logs before any heavy imports
+_os.environ.setdefault("TF_ENABLE_ONEDNN_OPTS", "0")
+_os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+_os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+_os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import chromadb
 import numpy as np
@@ -22,6 +29,11 @@ from transformers import CLIPModel, CLIPProcessor
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR
+# Ensure all file operations are relative to the app's own directory,
+# regardless of the working directory Streamlit was launched from.
+import os as _os
+_os.chdir(str(APP_DIR))
+
 ARTIFACTS = PROJECT_DIR / "artifacts"
 REPORTS = PROJECT_DIR / "reports"
 MODEL_PATH = PROJECT_DIR / "model" / "cats_vs_dogs_model_quick500.keras"
@@ -37,13 +49,25 @@ RUN_LOG_PATH = PROJECT_DIR.parent / "logs" / "run_sampled25_terminal.log"
 MEMORY_MIN_CONFIDENCE = 0.75
 
 
+def _find_sample_root() -> Path:
+    """Return the best available sampled image directory."""
+    for candidate in [
+        PROJECT_DIR / "data" / "sampled_25_percent",
+        PROJECT_DIR / "data" / "sampled_25_percent_seed_777",
+        PROJECT_DIR / "data" / "sampled_10_percent",
+    ]:
+        if candidate.exists() and (candidate / "cats").exists() and (candidate / "dogs").exists():
+            return candidate
+    return PROJECT_DIR / "data" / "sampled_25_percent"
+
+
 def _extract_float(pattern: str, text: str):
     m = re.search(pattern, text, flags=re.MULTILINE)
     return float(m.group(1)) if m else None
 
 
 def _count_sampled_split():
-    sample_root = PROJECT_DIR / "data" / "sampled_25_percent"
+    sample_root = _find_sample_root()
     cats = len(list((sample_root / "cats").glob("*.jpg"))) if (sample_root / "cats").exists() else 0
     dogs = len(list((sample_root / "dogs").glob("*.jpg"))) if (sample_root / "dogs").exists() else 0
     total = cats + dogs
@@ -118,14 +142,31 @@ def load_clip_stack():
 def load_vector_collection():
     if not VECTOR_DB_ROOT.exists():
         return None
-    db_candidates = sorted(
-        [p for p in VECTOR_DB_ROOT.glob("clip_chroma_db*") if p.is_dir()],
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    db_candidates = [p for p in VECTOR_DB_ROOT.glob("clip_chroma_db*") if p.is_dir()]
     if not db_candidates:
         return None
-    client = chromadb.PersistentClient(path=str(db_candidates[0]))
+
+    # Pick the DB with the most vectors. Fall back to newest mtime if all are empty.
+    best_path = None
+    best_count = -1
+    for p in db_candidates:
+        try:
+            client = chromadb.PersistentClient(path=str(p))
+            col = client.get_or_create_collection(
+                name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+            )
+            n = col.count()
+            if n > best_count:
+                best_count = n
+                best_path = p
+        except Exception:
+            continue
+
+    if best_path is None:
+        # All failed — fall back to newest by mtime
+        best_path = sorted(db_candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+    client = chromadb.PersistentClient(path=str(best_path))
     return client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
 
 
@@ -140,8 +181,9 @@ def _encode_pil_images(images):
 
 
 def _build_memory_from_sampled_subset(max_per_class=200):
-    cats = sorted((PROJECT_DIR / "data" / "sampled_25_percent" / "cats").glob("*.jpg"))[:max_per_class]
-    dogs = sorted((PROJECT_DIR / "data" / "sampled_25_percent" / "dogs").glob("*.jpg"))[:max_per_class]
+    sample_root = _find_sample_root()
+    cats = sorted((sample_root / "cats").glob("*.jpg"))[:max_per_class]
+    dogs = sorted((sample_root / "dogs").glob("*.jpg"))[:max_per_class]
     paths = [(p, 0, "cats") for p in cats] + [(p, 1, "dogs") for p in dogs]
     if not paths:
         return {"added": 0, "seconds": 0.0}
@@ -438,7 +480,10 @@ def render_experiment_status():
             st.success(f"Indexed {res['added']} images in {res['seconds']:.2f}s.")
     with c2:
         if st.button("Generate Comparative EDA"):
-            proc = subprocess.run(["python", str(PROJECT_DIR / "comparative_eda.py")], capture_output=True, text=True)
+            proc = subprocess.run(
+                ["python", str(PROJECT_DIR / "comparative_eda.py")],
+                capture_output=True, text=True, cwd=str(PROJECT_DIR)
+            )
             if proc.returncode == 0:
                 st.success("Comparative EDA report generated.")
             else:
@@ -446,7 +491,10 @@ def render_experiment_status():
                 st.code(proc.stderr or proc.stdout)
     if st.button("Rebuild Full Experiment Artifacts (slow)"):
         with st.spinner("Running full pipeline to regenerate summary/csv/model artifacts..."):
-            proc = subprocess.run(["python", str(PROJECT_DIR / "quick500_experiment.py"), "--seed", "777"], capture_output=True, text=True)
+            proc = subprocess.run(
+                ["python", str(PROJECT_DIR / "quick500_experiment.py"), "--seed", "777"],
+                capture_output=True, text=True, cwd=str(PROJECT_DIR)
+            )
         if proc.returncode == 0:
             st.success("Full artifacts rebuilt. Refresh page to load complete metrics.")
         else:
@@ -479,7 +527,10 @@ def render_comparative_eda():
     need_generate = (not cmp_plot.exists()) or (not curve_plot.exists()) or (not COMPARATIVE_REPORT.exists())
     if need_generate:
         with st.spinner("Preparing comparative EDA assets..."):
-            proc = subprocess.run(["python", str(PROJECT_DIR / "comparative_eda.py")], capture_output=True, text=True)
+            proc = subprocess.run(
+                ["python", str(PROJECT_DIR / "comparative_eda.py")],
+                capture_output=True, text=True, cwd=str(PROJECT_DIR)
+            )
         if proc.returncode != 0:
             st.error("Could not generate comparative EDA assets.")
             st.code(proc.stderr or proc.stdout)
@@ -511,7 +562,7 @@ def render_live_demo():
     )
 
     img = None
-    sample_root = PROJECT_DIR / "data" / "sampled_25_percent"
+    sample_root = _find_sample_root()
     if source_mode == "Upload":
         uploaded = st.file_uploader("Upload a cat/dog image", type=["jpg", "jpeg", "png"])
         if uploaded:
@@ -630,13 +681,156 @@ def render_live_demo():
         st.info("Retrieval system is updated instantly. Deep learning model would require re-training/fine-tuning for new memory.")
 
 
+def _run_command_live(cmd: list[str], cwd: str):
+    """Stream a subprocess command's output line-by-line into a Streamlit code block."""
+    import sys
+    output_area = st.empty()
+    lines: list[str] = []
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+        )
+        for line in proc.stdout:
+            lines.append(line.rstrip())
+            # Keep last 60 lines visible so the box doesn't grow forever
+            output_area.code("\n".join(lines[-60:]), language="text")
+        proc.wait()
+        return proc.returncode
+    except FileNotFoundError as exc:
+        st.error(f"Could not start process: {exc}")
+        return 1
+
+
+def render_commands():
+    st.subheader("Run Commands")
+    st.caption("Every command runs from the project root. Click the button to execute and stream live output here.")
+
+    REPO_ROOT = str(PROJECT_DIR.parent)
+    TCONTEXT = str(PROJECT_DIR)
+
+    # ------------------------------------------------------------------ #
+    # Command definitions: (label, description, cmd_list, cwd, key)       #
+    # ------------------------------------------------------------------ #
+    commands = [
+        {
+            "label": "Launch Streamlit App",
+            "description": "Start the dashboard on `http://localhost:8501`. "
+                           "Use this if you launched the app from the terminal and want a reminder of the command.",
+            "cmd_display": "streamlit run tcontext\\web_app.py",
+            "cmd": ["streamlit", "run", str(PROJECT_DIR / "web_app.py")],
+            "cwd": REPO_ROOT,
+            "key": "cmd_launch",
+            "warn": "This will open a second Streamlit instance — you are already inside one. "
+                    "Use it only as a reference or run it from your terminal instead.",
+            "readonly": True,
+        },
+        {
+            "label": "Install Dependencies",
+            "description": "Install all pinned packages from `tcontext/requirements.txt`.",
+            "cmd_display": "pip install -r tcontext\\requirements.txt",
+            "cmd": ["pip", "install", "-r", str(PROJECT_DIR / "requirements.txt")],
+            "cwd": REPO_ROOT,
+            "key": "cmd_install",
+        },
+        {
+            "label": "Run Full Experiment Pipeline",
+            "description": "Train EfficientNetB0, build CLIP vector index, evaluate both methods, "
+                           "save all artifacts. Takes several minutes on first run.",
+            "cmd_display": "python tcontext\\quick500_experiment.py --seed 777",
+            "cmd": ["python", str(PROJECT_DIR / "quick500_experiment.py"), "--seed", "777"],
+            "cwd": REPO_ROOT,
+            "key": "cmd_experiment",
+        },
+        {
+            "label": "Generate Comparative EDA",
+            "description": "Produce comparative method metrics plot, learning curve plot, "
+                           "and `reports/comparative_eda_report.md`.",
+            "cmd_display": "python tcontext\\comparative_eda.py",
+            "cmd": ["python", str(PROJECT_DIR / "comparative_eda.py")],
+            "cwd": REPO_ROOT,
+            "key": "cmd_eda",
+        },
+        {
+            "label": "Query Image — Vector DB Retrieval",
+            "description": "Run a retrieval prediction for a single image against the vector DB.",
+            "cmd_display": 'python tcontext\\query_demo.py --query-image "path\\to\\image.jpg" --top-k 5',
+            "cmd": None,   # path is user-provided — shown as copy-only
+            "cwd": REPO_ROOT,
+            "key": "cmd_query",
+        },
+        {
+            "label": "Add Image to Retrieval Memory",
+            "description": "Instantly index a new labeled image into the vector DB without retraining.",
+            "cmd_display": 'python tcontext\\query_demo.py --add-image "path\\to\\image.jpg" --label dogs',
+            "cmd": None,   # path is user-provided — shown as copy-only
+            "cwd": REPO_ROOT,
+            "key": "cmd_add",
+        },
+        {
+            "label": "Capture Epoch Logs to File",
+            "description": "Run the full experiment and save all output (including Keras epoch logs) to a log file.",
+            "cmd_display": "python tcontext\\quick500_experiment.py --seed 777 2>&1 | Tee-Object -FilePath logs\\run_sampled25_terminal.log",
+            "cmd": None,   # PowerShell pipeline — copy-only
+            "cwd": REPO_ROOT,
+            "key": "cmd_log",
+        },
+    ]
+
+    for entry in commands:
+        with st.expander(f"**{entry['label']}**  —  {entry['description']}", expanded=False):
+            st.code(entry["cmd_display"], language="powershell")
+
+            if entry.get("readonly"):
+                st.info(entry.get("warn", ""))
+                continue
+
+            if entry["cmd"] is None:
+                st.caption("This command requires a file path — copy it above, fill in your path, and run it in your terminal.")
+                continue
+
+            run_key = f"run_{entry['key']}"
+            if st.button(f"▶ Run: {entry['label']}", key=run_key):
+                st.markdown("**Output:**")
+                rc = _run_command_live(entry["cmd"], cwd=entry["cwd"])
+                if rc == 0:
+                    st.success("Command completed successfully.")
+                    # Clear caches so the dashboard reflects new artifacts immediately
+                    st.cache_data.clear()
+                    st.cache_resource.clear()
+                else:
+                    st.error(f"Command exited with code {rc}.")
+
+    # ------------------------------------------------------------------ #
+    # Quick reference card                                                 #
+    # ------------------------------------------------------------------ #
+    st.markdown("---")
+    st.markdown("#### Quick Reference")
+    ref = {
+        "One-click launch (PowerShell)": ".\\launch_app.ps1",
+        "Full pipeline + launch": ".\\run_demo.ps1",
+        "Install deps": "pip install -r tcontext\\requirements.txt",
+        "Train + benchmark": "python tcontext\\quick500_experiment.py --seed 777",
+        "EDA report": "python tcontext\\comparative_eda.py",
+        "Query vector DB": 'python tcontext\\query_demo.py --query-image "img.jpg" --top-k 5',
+        "Add to memory": 'python tcontext\\query_demo.py --add-image "img.jpg" --label dogs',
+    }
+    ref_df = pd.DataFrame(list(ref.items()), columns=["Action", "Command"])
+    st.dataframe(ref_df, use_container_width=True, hide_index=True)
+
+
 def main():
     st.set_page_config(page_title="Thesis Comparative Demo", layout="wide")
     st.title("Thesis Demo: Deep Learning vs Retrieval Memory")
     st.caption("Clear objective: show similar task performance, but much lower incremental update cost for retrieval-based memory")
     section = st.radio(
         "Section",
-        options=["Overview", "Comparative EDA", "Artifacts", "Live Demo"],
+        options=["Overview", "Comparative EDA", "Artifacts", "Live Demo", "Commands"],
         horizontal=True,
     )
 
@@ -648,6 +842,8 @@ def main():
         render_comparative_eda()
     elif section == "Artifacts":
         render_artifacts()
+    elif section == "Commands":
+        render_commands()
     else:
         render_live_demo()
 

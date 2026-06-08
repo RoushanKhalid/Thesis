@@ -39,7 +39,7 @@ IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 SAMPLE_RATIO = 0.25
 EPOCHS = 12
-PROJECT_DIR = Path("tcontext")
+PROJECT_DIR = Path(__file__).resolve().parent
 AUTOTUNE = tf.data.AUTOTUNE
 
 

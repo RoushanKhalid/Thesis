@@ -68,7 +68,7 @@ def _build_clean_subset(raw_petimages: Path, clean_root: Path, max_per_class: in
 
 
 def get_dataset_root() -> Path:
-    data_root = Path("tcontext") / "data"
+    data_root = Path(__file__).resolve().parent / "data"
     raw_petimages = _extract_raw_dataset(data_root / "raw")
     clean_root = _build_clean_subset(raw_petimages, data_root / "clean", max_per_class=2500)
     return clean_root

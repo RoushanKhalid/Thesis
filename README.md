@@ -1,8 +1,6 @@
 # A Retrieval-Based Multi-Modal Learning Framework for Incremental Knowledge Integration Without Model Fine-Tuning
 
-Welcome to the main repository for the thesis project on **Retrieval-Based Multi-Modal Learning**. This project implements a novel framework designed for continuous, incremental learning without the costly process of repeatedly fine-tuning model weights. 
-
-By utilizing an **Intelligent Memory Orchestrator (IMO)** and an external vector database, this system provides near-real-time knowledge integration, high robustness, and hardware efficiency compared to traditional neural network fine-tuning.
+This project implements a novel framework for continuous, incremental learning **without fine-tuning model weights**. An **Intelligent Memory Orchestrator (IMO)** combined with an external vector database (ChromaDB) provides near-real-time knowledge integration, replacing the costly backpropagation loop with a fast embedding-and-retrieve cycle.
 
 ---
 
@@ -16,87 +14,145 @@ This thesis proposes a **non-parametric, retrieval-centric framework**. Instead 
 
 ## 🗂️ Repository Structure
 
-* `tcontext/` - The core implementation, pipeline, and web demo for the "Cats vs Dogs" incremental learning experiment.
-  * *`quick500_experiment.py`*: Full evaluation pipeline (training, testing, report creation).
-  * *`web_app.py`*: Streamlit interactive dashboard.
-  * *`query_demo.py`*: CLI utility for incremental memory updates.
-  * *`vector_db/`*: The persistent ChromaDB vector store.
-* `logs/` - Execution logs and script outputs.
-* `proposal/` - Initial thesis outlines and research proposals.
-* `thesis_enrichment.md` - Core theoretical formulation and architecture rules (IMO design, mathematical models).
-* `run_demo.ps1` - PowerShell script to initialize the demo and web app environments.
+```
+Thesis/
+├── launch_app.ps1                  ← One-click launcher (start here)
+├── run_demo.ps1                    ← Full pipeline + launch (runs experiment first if needed)
+├── tcontext/
+│   ├── web_app.py                  ← Streamlit dashboard
+│   ├── quick500_experiment.py      ← Full training + retrieval benchmark pipeline
+│   ├── comparative_eda.py          ← Generates comparative EDA plots and report
+│   ├── query_demo.py               ← CLI tool for incremental memory updates
+│   ├── dataset_utils.py            ← Dataset discovery, cleaning, caching
+│   ├── requirements.txt            ← Pinned Python dependencies
+│   ├── artifacts/                  ← Plots, CSVs, JSON summary
+│   ├── data/                       ← Raw, clean, and sampled image datasets
+│   ├── model/                      ← Trained Keras model (.keras)
+│   ├── reports/                    ← Markdown experiment reports
+│   └── vector_db/                  ← Persistent ChromaDB vector store
+└── logs/                           ← Execution logs
+```
 
 ---
 
 ## ⚡ Core Concepts
 
 ### 1. Separation of Memory
-The framework strictly separates knowledge into two layers:
-- **Parametric Memory**: A frozen encoder (pre-trained, such as `EfficientNetB0` or `CLIP`) that extracts rich feature embeddings.
-- **Non-parametric Memory**: A dynamic external vector database ($V$) storing embeddings, labels, and quality scores.
+- **Parametric Memory**: A frozen encoder (`EfficientNetB0` or `CLIP`) that extracts rich feature embeddings — weights never change.
+- **Non-parametric Memory**: A dynamic external vector database storing embeddings, labels, and quality scores — updated in milliseconds.
 
 ### 2. Intelligent Memory Orchestrator (IMO)
-When new data arrives, instead of directly appending to the database, the IMO acts as a quality gate:
-- **Consistency Check**: Ensures the new sample aligns with the prototype cluster.
-- **Conflict Detection**: Quarantines noisy labels or conflicting data points.
-- **Temporal Weighting**: Prevents stale information from skewing new predictions.
+New data passes through a quality gate before entering memory:
+- **Confidence Gating**: rejects samples where the classifier confidence is below 75%.
+- **Conflict Detection**: quarantines noisy labels or samples that disagree with the existing class prototype.
+- **Temporal Weighting**: prevents stale information from skewing new predictions.
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-Make sure you have Python installed and the necessary pip dependencies for the project:
-```bash
-pip install tensorflow keras chromadb streamlit openai-clip pandas matplotlib
-```
 
-### Running the Full Comparative Demo
-To run the automated setup and launch the Streamlit dashboard comparing the fixed base classifier against the dynamic retrieval framework:
+Python 3.10+ is required. Install all dependencies from the pinned requirements file:
 
 ```powershell
-# From the repository root:
+pip install -r tcontext\requirements.txt
+```
+
+> All packages are pinned to the exact versions used during development. See `tcontext/requirements.txt` for the full list.
+
+---
+
+## ▶️ Running the App — Two Options
+
+### Option 1: One-Click Launch (recommended)
+
+The fastest path. Use this when the experiment artifacts (model, vector DB) are already present.
+
+```powershell
+.\launch_app.ps1
+```
+
+- Kills any existing process on port 8501.
+- Starts Streamlit and opens `http://localhost:8501` in your browser automatically.
+- Keeps the terminal window open so you can see live logs.
+
+### Option 2: Full Pipeline + Launch
+
+Use this on a fresh clone, or when you want to regenerate all experiment artifacts before opening the dashboard.
+
+```powershell
 .\run_demo.ps1
 ```
-The script will ensure all assets are prepared and automatically launch the Web UI on `http://localhost:8501`. 
 
-### Using the Streamlit Dashboard
-Inside the dashboard, you can:
-1. Examine the **Cost VS Accuracy** differences between parametric fine-tuning & vector indexing.
-2. View the full **Exploratory Data Analysis (EDA)**.
-3. Use the **Live Inference module** to upload an image and compare the Base Model prediction against the Retrieval Memory prediction.
-4. **Demonstrate Incremental Learning**: Upload a *new* labeled sample to instantly update the vector database and immediately query it again, demonstrating 0-latency adaptation without restarting or retraining the model.
+- Checks whether the trained model and vector DB already exist.
+- If missing, runs `quick500_experiment.py --seed 777` (training + retrieval benchmark) then `comparative_eda.py`.
+- Launches the Streamlit dashboard once assets are ready.
+
+> The first run trains EfficientNetB0 and builds the CLIP vector index — this takes several minutes depending on your hardware. Subsequent runs skip straight to the dashboard.
 
 ---
 
-## 🖥️ Standalone CLI Commands
+## 🖥️ Using the Dashboard
 
-You can run experiments or query operations manually from the CLI inside the `tcontext` folder:
+| Section | What you can do |
+|---|---|
+| **Overview** | See side-by-side accuracy, F1, and timing metrics for the classifier vs retrieval system. Initialize or rebuild the retrieval memory. |
+| **Comparative EDA** | View training convergence curves and the full comparative method metrics plot. |
+| **Artifacts** | Browse all generated plots (confusion matrices, ROC curve, training curves) and raw CSV metrics. |
+| **Live Demo** | Upload an image (or pick a built-in sample) and get simultaneous predictions from EfficientNet and CLIP+VectorDB. Upload 1–10 new labeled images to update retrieval memory **instantly, without retraining**. |
 
-**Run the static model vs retrieval benchmark:**
-```bash
-python tcontext/quick500_experiment.py --seed 777
+---
+
+## 🖧 Standalone CLI Commands
+
+All commands run from the **repository root**.
+
+**Run the full training + retrieval benchmark:**
+```powershell
+python tcontext\quick500_experiment.py --seed 777
 ```
 
-**Query an image directly from the CLI:**
-```bash
-python tcontext/query_demo.py --query-image "path/to/cat.jpg" --top-k 5
+**Capture full epoch logs to file:**
+```powershell
+python tcontext\quick500_experiment.py --seed 777 2>&1 | Tee-Object -FilePath logs\run_sampled25_terminal.log
 ```
 
-**Add a new concept/image to the database instantly:**
-```bash
-python tcontext/query_demo.py --add-image "path/to/new_dog.png" --label dogs
+**Generate comparative EDA report and plots:**
+```powershell
+python tcontext\comparative_eda.py
+```
+
+**Query an image against the vector DB:**
+```powershell
+python tcontext\query_demo.py --query-image "path\to\image.jpg" --top-k 5
+```
+
+**Add a new image to retrieval memory instantly:**
+```powershell
+python tcontext\query_demo.py --add-image "path\to\new_dog.jpg" --label dogs
 ```
 
 ---
 
-## 📊 Experimental Results & Benchmarks
+## 📊 Experimental Results (Seed 777, 25% sample)
 
-Our latest benchmarks (available under `tcontext/reports/`) test the system on the Microsoft Cats vs Dogs dataset using a 25% stratified sampling setup to control overfitting. 
+Tested on the Microsoft Cats vs Dogs dataset. 1250 total images (625 cats / 625 dogs), 80/20 train/val split.
 
-Using **CLIP (ViT-B/32) + ChromaDB** against a baseline **EfficientNetB0**:
-- **Retrieval Test Accuracy**: Matches or slightly outperforms the trained parameterization (e.g., ~98.8% vs ~98.0%).
-- **Adaptation Time**: Instantaneous index operation (O(1) seconds) vs iterative backpropagation (O(N) minutes/hours).
-- **Forgetting Risk**: 0% (Controlled purely via Explicit Document Management).
+| Method | Accuracy | Precision | Recall | F1 |
+|---|---|---|---|---|
+| EfficientNetB0 Classifier | 0.9800 | 1.0000 | 0.9600 | 0.9796 |
+| CLIP + ChromaDB Retrieval | 0.9880 | 1.0000 | 0.9760 | 0.9879 |
 
-Please refer to the `thesis_enrichment.md` file for full mathematical formulations and the ablation study blueprint.
+Key takeaway: the retrieval system **matches or exceeds** classifier accuracy while supporting **O(1) incremental updates** — no retraining, no forgetting risk.
+
+Full reports and plots are in `tcontext/reports/` and `tcontext/artifacts/`.
+
+---
+
+## 🔁 Reproducibility
+
+- Use `--seed 777` for deterministic sampling and train/val splits.
+- The cleaned dataset cache (`tcontext/data/clean/`) is reused across runs unless manually deleted.
+- The vector DB persists across sessions under `tcontext/vector_db/`.
+- If no local TensorFlow Datasets zip is available, run a one-time TFDS download for `cats_vs_dogs` first.
